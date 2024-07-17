@@ -1,0 +1,142 @@
+from googleapiclient.discovery import build
+import pandas as pd
+import re
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+# API 키 설정
+api_key = 'AIzaSyCecf-X8oosmj-pfMC7MRqXNqUt0gN98Zs'  # 여기에 API 키를 입력하세요.
+
+# YouTube API 클라이언트 생성
+youtube = build('youtube', 'v3', developerKey=api_key)
+
+# 채널 ID
+channel_id = 'UCF4Wxdo3inmxP-Y59wXDsFw'
+
+# 검색어 설정
+search_query = '미세먼지'
+
+# 데이터 저장용 리스트
+video_data = []
+
+# YouTube API 요청 함수
+def search_videos(youtube, query, channel_id, published_after, published_before, next_page_token=None):
+    request = youtube.search().list(
+        part="snippet",
+        channelId=channel_id,
+        q=query,
+        type='video',
+        publishedAfter=published_after,
+        publishedBefore=published_before,
+        maxResults=200,
+        pageToken=next_page_token
+    )
+    response = request.execute()
+    return response
+
+def get_comments(youtube, video_id):
+    comments = []
+    try:
+        request = youtube.commentThreads().list(
+            part="snippet",
+            videoId=video_id,
+            maxResults=25
+        )
+        response = request.execute()
+        while response:
+            for item in response['items']:
+                comment = item['snippet']['topLevelComment']['snippet']['textOriginal']
+                comments.append(comment)
+            if 'nextPageToken' in response:
+                request = youtube.commentThreads().list(
+                    part="snippet",
+                    videoId=video_id,
+                    pageToken=response['nextPageToken'],
+                    maxResults=25
+                )
+                response = request.execute()
+            else:
+                break
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    return comments
+
+# 2019년 1월 1일부터 2019년 12월 31일까지 검색
+published_after = '2019-01-01T00:00:00Z'
+published_before = '2019-12-31T00:00:00Z'
+
+#전처리 함수
+def preprocess_text(text):
+    text = text.lower()  # 소문자로 변환
+    text = re.sub(r'[^a-zA-Z0-9가-힣\u4e00-\u9fff\s]', '', text)  # 알파벳, 숫자, 한글, 한자, 공백을 제외한 문자 제거
+    return text
+
+# 첫 페이지 검색
+response = search_videos(youtube, search_query, channel_id, published_after, published_before)
+
+# 결과 처리
+while response:
+    for item in response['items']:
+        video_id = item['id']['videoId']
+        title = item['snippet']['title']
+        publish_date = item['snippet']['publishedAt']
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        # 제목에 '미세먼지' 포함 확인
+        if '미세먼지' in title:
+            # 댓글 가져오기
+            comments = get_comments(youtube, video_id)
+            if len(comments) >= 3:
+                comments_str = ' | '.join(comments)  # 댓글을 하나의 문자열로 연결
+
+                video_data.append({
+                    'Channel': 'MBC News',
+                    'Title': title,
+                    'Publish Date': publish_date,
+                    'Video URL': video_url,
+                    'Comments': comments_str
+                })
+
+    # 다음 페이지 토큰 확인
+    next_page_token = response.get('nextPageToken')
+    if next_page_token:
+        response = search_videos(youtube, search_query, channel_id, published_after, published_before, next_page_token)
+    else:
+        break
+
+
+# 데이터프레임 생성
+df = pd.DataFrame(video_data)
+
+
+#제목 전처리
+df["processed_title"] = df['Title'].apply(preprocess_text)
+#중국 관련 키워드 목록
+china_keywords = '중국 中 중국발 중국정부'
+#한국 관련 키워드 목록
+korea_keywords = '정부 대책 대응 대통령'
+
+# 제목과 키워드 벡터화
+vectorizer = CountVectorizer().fit_transform(df['processed_title'].tolist() + [china_keywords, korea_keywords])
+vectors = vectorizer.toarray()
+
+# 제목 벡터와 중국, 한국 키워드 벡터 분리
+title_vectors = vectors[:-2]
+china_vector = vectors[-2].reshape(1, -1)
+korea_vector = vectors[-1].reshape(1, -1)
+
+# 코사인 유사도 계산
+china_cos_scores = cosine_similarity(title_vectors, china_vector).flatten()
+korea_cos_scores = cosine_similarity(title_vectors, korea_vector).flatten()
+
+# 데이터프레임에 유사도 추가
+df['china_cos_score'] = china_cos_scores
+df['korea_cos_score'] = korea_cos_scores
+
+# 불필요한 열 제거
+df.drop(columns=['processed_title'], inplace=True)
+
+# 데이터프레임 저장
+df.to_csv('MBC_fine_dust_2019.csv', index=False)
+
+print("완료")
