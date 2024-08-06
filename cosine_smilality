@@ -1,3 +1,4 @@
+#Youtube 영상 제목과 댓글을 받아 코사인 유사도를 통해 제목과 댓글 간의 유사도 측정 
 from googleapiclient.discovery import build
 import pandas as pd
 import re
